@@ -1,0 +1,8 @@
+.DS_Store
+.venv
+temp
+output
+.idea
+.vscode
+.claude
+data
