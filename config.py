@@ -49,6 +49,7 @@ FACE_SIMILARITY_THRESHOLD = 0.7 # 人脸 embedding 相似度阈值
 
 # VideoMAE 动作确认
 VIDEOMAE_MODEL_NAME = "MCG-NJU/videomae-base-finetuned-kinetics"
+VIDEOMAE_FINETUNED_PATH = os.path.join(PROJECT_DIR, "models", "videomae-dance")  # 微调模型路径（优先加载）
 DANCE_SCORE_THRESHOLD = 0.10    # 动作分类中 dancing 类别总分阈值（VideoMAE 对舞蹈识别偏保守）
 VIDEOMAE_SAMPLE_FRAMES = 16     # 采样帧数
 

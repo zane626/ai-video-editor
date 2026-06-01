@@ -18,7 +18,7 @@ from collections import defaultdict
 
 from config import (
     POSE_FPS, FACE_SIMILARITY_THRESHOLD, DANCE_SCORE_THRESHOLD,
-    VIDEOMAE_MODEL_NAME, VIDEOMAE_SAMPLE_FRAMES,
+    VIDEOMAE_MODEL_NAME, VIDEOMAE_FINETUNED_PATH, VIDEOMAE_SAMPLE_FRAMES,
     MOTION_THRESHOLD, MOTION_SMOOTH_WINDOW,
     BOUNDARY_PADDING_SEC, DANCE_CLASS_KEYWORDS,
 )
@@ -224,20 +224,32 @@ def find_motion_boundaries(motion: np.ndarray, threshold: float,
 # ============================================================
 
 def load_videomae_model():
-    """加载 VideoMAE 模型"""
+    """加载 VideoMAE 模型（优先加载微调版本）"""
     from transformers import VideoMAEForVideoClassification, VideoMAEImageProcessor
-    log_info(f"加载 VideoMAE 模型: {VIDEOMAE_MODEL_NAME}")
-    model = VideoMAEForVideoClassification.from_pretrained(VIDEOMAE_MODEL_NAME)
-    processor = VideoMAEImageProcessor.from_pretrained(VIDEOMAE_MODEL_NAME)
+
+    # 优先加载微调后的模型
+    if os.path.isdir(VIDEOMAE_FINETUNED_PATH):
+        model_path = VIDEOMAE_FINETUNED_PATH
+        log_info(f"加载微调 VideoMAE 模型: {model_path}")
+    else:
+        model_path = VIDEOMAE_MODEL_NAME
+        log_info(f"加载预训练 VideoMAE 模型: {model_path}")
+
+    model = VideoMAEForVideoClassification.from_pretrained(model_path)
+    processor = VideoMAEImageProcessor.from_pretrained(model_path)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model = model.to(device).eval()
-    log_info(f"VideoMAE 已加载到 {device}")
-    return model, processor, device
+
+    # 判断是否为微调后的二分类模型
+    is_finetuned = model.config.num_labels == 2
+    log_info(f"VideoMAE 已加载到 {device} ({'二分类微调' if is_finetuned else 'Kinetics-400 多分类'})")
+    return model, processor, device, is_finetuned
 
 
 @torch.no_grad()
 def classify_dance(model, processor, device: str,
-                   frames: List[np.ndarray]) -> float:
+                   frames: List[np.ndarray],
+                   is_finetuned: bool = False) -> float:
     """
     用 VideoMAE 对视频片段进行动作分类
 
@@ -260,12 +272,16 @@ def classify_dance(model, processor, device: str,
     outputs = model(**inputs)
     probs = outputs.logits.softmax(dim=-1).cpu().numpy()[0]
 
-    # 汇总 dance 相关类别得分
-    dance_score = 0.0
-    for idx, label in model.config.id2label.items():
-        label_lower = label.lower()
-        if any(kw in label_lower for kw in DANCE_CLASS_KEYWORDS):
-            dance_score += probs[idx]
+    if is_finetuned:
+        # 微调后的二分类模型：直接取 dance 类别的概率
+        dance_score = float(probs[1])
+    else:
+        # 原始 Kinetics-400 模型：汇总 dance 相关类别得分
+        dance_score = 0.0
+        for idx, label in model.config.id2label.items():
+            label_lower = label.lower()
+            if any(kw in label_lower for kw in DANCE_CLASS_KEYWORDS):
+                dance_score += probs[idx]
 
     return dance_score
 
@@ -370,6 +386,7 @@ def stage2_detect(video_path: str,
     videomae_model = None
     videomae_processor = None
     videomae_device = None
+    videomae_is_finetuned = False
 
     confirmed = []
     progress = ProgressTracker(len(candidates), "Stage 2 精检")
@@ -437,10 +454,11 @@ def stage2_detect(video_path: str,
 
         # 2e. VideoMAE 动作确认（延迟加载）
         if videomae_model is None:
-            videomae_model, videomae_processor, videomae_device = load_videomae_model()
+            videomae_model, videomae_processor, videomae_device, videomae_is_finetuned = load_videomae_model()
 
         dance_score = classify_dance(
-            videomae_model, videomae_processor, videomae_device, frames
+            videomae_model, videomae_processor, videomae_device, frames,
+            is_finetuned=videomae_is_finetuned
         )
 
         if dance_score < DANCE_SCORE_THRESHOLD:
