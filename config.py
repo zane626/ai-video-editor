@@ -89,13 +89,11 @@ SPEED_SLOW = 0.5                # 高光慢放倍速
 ENTRY_DURATION_SEC = 1.5        # 入场快进时长
 
 # 卡点参数
-BEATS_PER_CUT = 3               # 每 N 拍切一次景别
+BEATS_PER_CUT = 3               # 每 N 拍切一次
 FLASH_DURATION_SEC = 0.1        # 闪白时长
 TRANSITION_DURATION_SEC = 0.3   # 转场溶解时长
 
-# 景别裁剪比例（相对于人体 bbox）
-SHOT_TYPES = {
-    "full": 1.0,                # 全景
-    "medium": 0.7,              # 中景
-    "close": 0.4,               # 特写
-}
+# 智能景别：根据动作幅度 + 音乐节奏动态调整缩放
+ZOOM_RANGE = (1.0, 1.6)        # 缩放范围 (动作大时, 动作小时)，1.0 = 不缩放
+ZOOM_HIGHLIGHT_BOOST = 1.3     # 高光段额外缩放倍数
+ZOOM_BEAT_DROP_BOOST = 1.2     # beat drop 瞬间额外缩放倍数

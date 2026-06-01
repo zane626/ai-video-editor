@@ -20,7 +20,7 @@ from config import (
     SPEED_ENTRY, SPEED_FAST, SPEED_NORMAL, SPEED_SLOW,
     ENTRY_DURATION_SEC, BEATS_PER_CUT,
     FLASH_DURATION_SEC, TRANSITION_DURATION_SEC,
-    SHOT_TYPES,
+    ZOOM_RANGE, ZOOM_HIGHLIGHT_BOOST, ZOOM_BEAT_DROP_BOOST,
 )
 from utils.video_utils import get_video_info, extract_frames
 from utils.display_utils import ProgressTracker, log_info, log_warn, log_stage
@@ -87,7 +87,12 @@ def compute_vertical_crop(video_path: str, start_sec: float, end_sec: float,
 def build_edit_timeline(segment: dict) -> List[dict]:
     """
     构建剪辑时间轴：将一段跳舞视频分割为多个子片段，
-    每个子片段有自己的速度、景别、转场效果
+    每个子片段有自己的速度、动态缩放、转场效果
+
+    缩放策略：
+    - 动作幅度大 → 拉远（看全身动作）
+    - 动作幅度小 → 推近（看细节）
+    - 高光段 / beat drop → 额外推近强调
 
     Returns:
         [
@@ -95,7 +100,7 @@ def build_edit_timeline(segment: dict) -> List[dict]:
                 "src_start": float,      # 原视频中的起始时间
                 "src_end": float,        # 原视频中的结束时间
                 "speed": float,          # 播放速度
-                "shot_type": str,        # 景别: full/medium/close
+                "zoom": float,           # 动态缩放比例 (1.0=不缩放)
                 "flash": bool,           # 是否有闪白
                 "transition": str or None,  # 转场类型
             },
@@ -106,26 +111,22 @@ def build_edit_timeline(segment: dict) -> List[dict]:
     beat_times = rhythm.get("beat_times", [])  # 段内相对时间
     beat_drops = set(rhythm.get("beat_drops", []))
     highlights = rhythm.get("highlight_ranges", [])
+    motion_amp = segment.get("motion_amplitude", [])
     start_sec = segment["start_sec"]
     end_sec = segment["end_sec"]
     duration = end_sec - start_sec
 
-    if not beat_times or len(beat_times) < 2:
-        # 没有 beat 信息，简单处理
-        return [{
-            "src_start": start_sec,
-            "src_end": end_sec,
-            "speed": SPEED_NORMAL,
-            "shot_type": "medium",
-            "flash": False,
-            "transition": None,
-        }]
-
-    # 确定景别切换点（每 N 个 beat 切一次）
-    shot_types_list = list(SHOT_TYPES.keys())
-    cut_points = [beat_times[i] for i in range(0, len(beat_times), BEATS_PER_CUT)]
-    if cut_points[-1] < duration - 0.5:
-        cut_points.append(duration)
+    # 计算运动量的归一化范围
+    if motion_amp:
+        amp_array = np.array(motion_amp)
+        amp_p5 = np.percentile(amp_array, 5)
+        amp_p95 = np.percentile(amp_array, 95)
+        amp_range = amp_p95 - amp_p5
+        if amp_range < 1e-6:
+            amp_range = 1.0
+    else:
+        amp_p5 = 0
+        amp_range = 1.0
 
     # 确定高光区间集合
     highlight_set = set()
@@ -133,9 +134,29 @@ def build_edit_timeline(segment: dict) -> List[dict]:
         for t in np.arange(hs, he, 0.05):
             highlight_set.add(round(t, 2))
 
+    zoom_min, zoom_max = ZOOM_RANGE
+
+    if not beat_times or len(beat_times) < 2:
+        # 没有 beat 信息，简单处理
+        avg_motion = np.mean(motion_amp) if motion_amp else 0
+        norm = np.clip((avg_motion - amp_p5) / amp_range, 0, 1)
+        zoom = zoom_max - norm * (zoom_max - zoom_min)
+        return [{
+            "src_start": start_sec,
+            "src_end": end_sec,
+            "speed": SPEED_NORMAL,
+            "zoom": round(zoom, 2),
+            "flash": False,
+            "transition": None,
+        }]
+
+    # 确定子片段切割点（每 N 个 beat 切一次）
+    cut_points = [beat_times[i] for i in range(0, len(beat_times), BEATS_PER_CUT)]
+    if cut_points[-1] < duration - 0.5:
+        cut_points.append(duration)
+
     # 构建子片段
     timeline = []
-    shot_idx = 0
 
     for i in range(len(cut_points) - 1):
         seg_start = cut_points[i]
@@ -153,25 +174,43 @@ def build_edit_timeline(segment: dict) -> List[dict]:
         else:
             speed = SPEED_FAST
 
-        # 决定景别
-        shot_type = shot_types_list[shot_idx % len(shot_types_list)]
+        # --- 智能缩放 ---
+        # 1. 根据动作幅度计算基础缩放
+        if motion_amp:
+            # 取子片段时间范围内的运动量均值
+            amp_indices = np.arange(len(motion_amp))
+            amp_times = amp_indices * (duration / max(len(motion_amp) - 1, 1))
+            mask = (amp_times >= seg_start) & (amp_times <= seg_end)
+            seg_motion = amp_array[mask] if mask.any() else amp_array
+            avg_motion = float(seg_motion.mean())
+        else:
+            avg_motion = 0
 
-        # 判断是否有 beat drop → 闪白
-        has_flash = any(
-            abs(bt - seg_start) < 0.3
-            for bt in beat_drops
-        )
+        # 归一化：0=静止, 1=最活跃
+        norm = np.clip((avg_motion - amp_p5) / amp_range, 0, 1)
+        # 反转：动作大→zoom小(拉远)，动作小→zoom大(推近)
+        zoom = zoom_max - norm * (zoom_max - zoom_min)
+
+        # 2. 高光段额外推近
+        if is_highlight:
+            zoom *= ZOOM_HIGHLIGHT_BOOST
+
+        # 3. beat drop 瞬间额外推近
+        has_flash = any(abs(bt - seg_start) < 0.3 for bt in beat_drops)
+        if has_flash:
+            zoom *= ZOOM_BEAT_DROP_BOOST
+
+        # 限制在合理范围
+        zoom = np.clip(zoom, 1.0, 2.0)
 
         timeline.append({
             "src_start": round(start_sec + seg_start, 3),
             "src_end": round(start_sec + seg_end, 3),
             "speed": speed,
-            "shot_type": shot_type,
+            "zoom": round(float(zoom), 2),
             "flash": has_flash,
             "transition": "flash" if has_flash else None,
         })
-
-        shot_idx += 1
 
     return timeline
 
@@ -234,14 +273,12 @@ def _simple_segment_cmd(video_path: str, output_path: str,
     src_end = seg["src_end"]
     duration = src_end - src_start
     speed = seg["speed"]
-    shot_type = seg["shot_type"]
+    zoom = seg.get("zoom", 1.0)
 
-    # 景别缩放
-    shot_scale = SHOT_TYPES.get(shot_type, 1.0)
-    if shot_scale < 1.0:
-        # 裁剪中心区域实现景别变化
-        new_cw = int(cw * shot_scale)
-        new_ch = int(ch * shot_scale)
+    # 动态缩放：zoom > 1.0 时裁剪中心区域实现推近效果
+    if zoom > 1.0:
+        new_cw = int(cw / zoom)
+        new_ch = int(ch / zoom)
         cx = cx + (cw - new_cw) // 2
         cy = cy + (ch - new_ch) // 2
         cw, ch = new_cw, new_ch
@@ -345,9 +382,12 @@ def stage4_edit(video_path: str, segments: List[Dict],
         # 构建剪辑时间轴
         timeline = build_edit_timeline(seg)
 
+        # 统计缩放范围
+        zooms = [s["zoom"] for s in timeline]
         log_info(
             f"  段 {idx+1}: {len(timeline)} 个子片段, "
             f"BPM={seg.get('rhythm', {}).get('bpm', '?')}, "
+            f"zoom={min(zooms):.2f}~{max(zooms):.2f}, "
             f"输出 → {os.path.basename(output_path)}"
         )
 

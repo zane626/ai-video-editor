@@ -487,6 +487,7 @@ def stage2_detect(video_path: str,
             "is_split_screen": is_split,
             "middle_screen_crop": middle_crop,
             "confidence": round(float(dance_score), 4),
+            "motion_amplitude": smooth_curve(motion).tolist() if len(motion) > 0 else [],
         })
 
         log_info(
