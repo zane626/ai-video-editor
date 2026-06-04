@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 剪辑工具</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <!-- 头部 -->
+        <header class="header">
+            <div class="header-content">
+                <h1>🎬 AI 视频剪辑工具</h1>
+                <p>一键检测舞蹈段落，自动生成抖音风短视频</p>
+            </div>
+        </header>
+
+        <main class="main-content">
+            <!-- 左侧：操作面板 -->
+            <aside class="sidebar">
+                <section class="panel">
+                    <h2>📹 上传视频</h2>
+                    <form id="uploadForm" class="upload-form">
+                        <div class="form-group">
+                            <label for="videoPath">视频路径</label>
+                            <input
+                                type="text"
+                                id="videoPath"
+                                placeholder="例: D:/video.mp4 或 /home/user/video.mp4"
+                                required
+                            >
+                            <small>本地视频完整路径</small>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="outputDir">输出目录 (可选)</label>
+                            <input
+                                type="text"
+                                id="outputDir"
+                                placeholder="留空使用默认目录"
+                            >
+                            <small>输出短视频的保存路径</small>
+                        </div>
+
+                        <button type="submit" class="btn btn-primary btn-large">
+                            ▶ 开始处理
+                        </button>
+                    </form>
+                </section>
+
+                <section class="panel">
+                    <h2>⚙️ 配置参数</h2>
+                    <details class="config-details">
+                        <summary>查看/编辑参数</summary>
+                        <div class="config-editor-wrapper">
+                            <textarea id="configEditor" class="config-editor" readonly></textarea>
+                            <div class="config-actions">
+                                <button type="button" class="btn btn-small" id="downloadConfigBtn">
+                                    ⬇ 下载
+                                </button>
+                                <button type="button" class="btn btn-small" id="resetConfigBtn">
+                                    ↺ 重置
+                                </button>
+                            </div>
+                        </div>
+                    </details>
+                </section>
+
+                <section class="panel">
+                    <h2>ℹ️ 帮助</h2>
+                    <div class="help-content">
+                        <p><strong>处理流程：</strong></p>
+                        <ol>
+                            <li>Stage 1: CLIP 粗筛检测舞蹈候选段</li>
+                            <li>Stage 2: 精确定位确认舞蹈动作</li>
+                            <li>Stage 3: 节奏分析提取音乐节拍</li>
+                            <li>Stage 4: 智能剪辑生成短视频</li>
+                        </ol>
+                        <p><strong>输出格式：</strong>9:16 竖屏（1080×1920），MP4 格式</p>
+                        <p><strong>输出目录：</strong> <code id="defaultOutputDir">...</code></p>
+                    </div>
+                </section>
+            </aside>
+
+            <!-- 右侧：处理结果 -->
+            <section class="main-panel">
+                <!-- 当前任务状态 -->
+                <div id="jobStatus" class="job-status hidden">
+                    <div class="status-header">
+                        <h2>处理中...</h2>
+                        <span class="status-close" onclick="closeJobStatus()">&times;</span>
+                    </div>
+                    <div class="progress-container">
+                        <div class="progress-bar-bg">
+                            <div class="progress-bar" id="progressBar"></div>
+                        </div>
+                        <div class="progress-text" id="progressText">0%</div>
+                    </div>
+                    <div class="status-message" id="statusMessage">初始化中...</div>
+                    <div class="status-details" id="statusDetails"></div>
+                    <div id="errorBox" class="error-box hidden"></div>
+                </div>
+
+                <!-- 输出文件列表 -->
+                <div class="section">
+                    <h2>📂 输出文件</h2>
+                    <div id="fileList" class="file-list">
+                        <p class="loading">加载中...</p>
+                    </div>
+                    <div class="refresh-button">
+                        <button type="button" class="btn btn-secondary" onclick="refreshFileList()">
+                            🔄 刷新列表
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 处理历史 -->
+                <div class="section">
+                    <h2>📋 处理历史</h2>
+                    <div id="jobHistory" class="job-history">
+                        <p class="empty">暂无处理记录</p>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
