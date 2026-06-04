@@ -107,6 +107,8 @@ def extract_frames(video_path: str, fps: float = 1.0,
             next_sample_frame += frame_interval
             if show_progress:
                 progress.update(1)
+            if max_frames and len(frames) >= max_frames:
+                break
 
         frame_count += 1
 

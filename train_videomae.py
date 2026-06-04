@@ -2,14 +2,11 @@
 VideoMAE 微调脚本 — 用自定义数据训练舞蹈二分类器
 
 用法:
-    python train_videomae.py \
-        --positive-dir <正样本视频目录> \
-        --negative-video <原始长视频路径> \
-        --output-dir models/videomae-dance \
-        --epochs 10 --batch-size 4
+    python train_videomae.py  --positive-dir F:\剪映\6月3日 --negative-video F:\剪映\[肥肥陈不肥]-直播回放-[2026-05-03_11_22_15].flv  --output-dir models/videomae-dance  --epochs 10 --batch-size 4
 """
 
 import argparse
+import gc
 import os
 import random
 import sys
@@ -167,16 +164,17 @@ def preprocess_samples(samples, processor, sample_frames=VIDEOMAE_SAMPLE_FRAMES)
         print(f"\r  预处理 [{i+1}/{len(samples)}] {filename} {time_range}...",
               end="", flush=True)
 
-        # 抽帧
+        # 只抽取 VideoMAE 需要的帧数，避免长片段占满内存
         frames, _ = extract_frames(
             video_path, fps=2,
-            start_sec=start_sec, end_sec=end_sec
+            start_sec=start_sec, end_sec=end_sec,
+            max_frames=sample_frames,
         )
 
         if len(frames) == 0:
             frames = [np.zeros((224, 224, 3), dtype=np.uint8)] * sample_frames
 
-        # 均匀采样
+        # 均匀采样（帧数可能略少于 sample_frames）
         n = len(frames)
         if n >= sample_frames:
             indices = np.linspace(0, n - 1, sample_frames, dtype=int)
@@ -191,6 +189,9 @@ def preprocess_samples(samples, processor, sample_frames=VIDEOMAE_SAMPLE_FRAMES)
         pixel_values = inputs["pixel_values"].squeeze(0)  # (T, C, H, W)
 
         cached.append((pixel_values, label))
+
+        del frames, sampled, pil_images, inputs
+        gc.collect()
 
     print()  # 换行
     return cached
@@ -220,32 +221,7 @@ def train(positive_dir: str, negative_video: str, output_dir: str,
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"使用设备: {device}")
 
-    # 1. 加载模型和处理器
-    print(f"加载预训练模型: {VIDEOMAE_MODEL_NAME}")
-    model = VideoMAEForVideoClassification.from_pretrained(VIDEOMAE_MODEL_NAME)
-    processor = VideoMAEImageProcessor.from_pretrained(VIDEOMAE_MODEL_NAME)
-
-    # 替换分类头为二分类
-    num_labels = 2
-    in_features = model.classifier.in_features
-    model.classifier = torch.nn.Linear(in_features, num_labels)
-    model.config.num_labels = num_labels
-    model.config.id2label = {0: "non-dance", 1: "dance"}
-    model.config.label2id = {"non-dance": 0, "dance": 1}
-
-    # 冻结 backbone，只训练分类头
-    for name, param in model.named_parameters():
-        if "classifier" not in name:
-            param.requires_grad = False
-
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    total_params = sum(p.numel() for p in model.parameters())
-    print(f"可训练参数: {trainable_params:,} / {total_params:,} "
-          f"({trainable_params/total_params*100:.2f}%)")
-
-    model = model.to(device)
-
-    # 2. 准备数据
+    # 1. 准备数据（预处理只需 processor，避免与模型争抢内存）
     # 正样本
     positive_samples = []
     video_extensions = {".mp4", ".avi", ".mkv", ".mov", ".flv", ".wmv", ".webm"}
@@ -293,7 +269,10 @@ def train(positive_dir: str, negative_video: str, output_dir: str,
 
     print(f"训练集: {len(train_samples)}, 验证集: {len(val_samples)}")
 
-    # 3. 预处理缓存（一次性提取所有帧）
+    print(f"加载 VideoMAE 处理器: {VIDEOMAE_MODEL_NAME}")
+    processor = VideoMAEImageProcessor.from_pretrained(VIDEOMAE_MODEL_NAME)
+
+    # 2. 预处理缓存（一次性提取所有帧）
     print("正在预处理训练集（提取帧 + VideoMAE 编码）...")
     t0 = time.time()
     train_cached = preprocess_samples(train_samples, processor)
@@ -317,6 +296,30 @@ def train(positive_dir: str, negative_video: str, output_dir: str,
         shuffle=False, collate_fn=collate_fn,
         num_workers=0,
     )
+
+    # 3. 加载模型（预处理完成后再加载，节省内存）
+    print(f"加载预训练模型: {VIDEOMAE_MODEL_NAME}")
+    model = VideoMAEForVideoClassification.from_pretrained(VIDEOMAE_MODEL_NAME)
+
+    # 替换分类头为二分类
+    num_labels = 2
+    in_features = model.classifier.in_features
+    model.classifier = torch.nn.Linear(in_features, num_labels)
+    model.config.num_labels = num_labels
+    model.config.id2label = {0: "non-dance", 1: "dance"}
+    model.config.label2id = {"non-dance": 0, "dance": 1}
+
+    # 冻结 backbone，只训练分类头
+    for name, param in model.named_parameters():
+        if "classifier" not in name:
+            param.requires_grad = False
+
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"可训练参数: {trainable_params:,} / {total_params:,} "
+          f"({trainable_params/total_params*100:.2f}%)")
+
+    model = model.to(device)
 
     # 4. 训练
     optimizer = torch.optim.AdamW(
